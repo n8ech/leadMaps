@@ -1,7 +1,7 @@
 const axios = require('axios');
 const fs = require('fs').promises;
 const mongoose = require('mongoose');
-require('dotenv').config({path:'./.env.local'});
+require('dotenv').config();
 
 // Récupération des variables d'environnement
 const PLACE_API_KEY = process.env.PLACE_API_KEY;
