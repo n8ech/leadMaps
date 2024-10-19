@@ -20,6 +20,12 @@ const placeSchema = new mongoose.Schema({
 
 const Place = mongoose.model('Place', placeSchema);
 
+const checkpointSchema = new mongoose.Schema({
+  lastProcessedLocationId: { type: Number, default: 0 },
+});
+
+const Checkpoint = mongoose.model('Checkpoint', checkpointSchema);
+
 // Types d'établissements à rechercher
 const PLACE_TYPES = ['store', 'restaurant', 'lodging', 'bar'];
 
@@ -32,18 +38,25 @@ async function readLocations() {
   return JSON.parse(data);
 }
 
+// Fonction pour lire le checkpoint depuis la base de données
 async function readCheckpoint() {
-  try {
-    const checkpoint = await fs.readFile('checkpoint.txt', 'utf8');
-    return parseInt(checkpoint.trim());
-  } catch (error) {
-    return 0;
+  let checkpoint = await Checkpoint.findOne();
+  if (!checkpoint) {
+    checkpoint = new Checkpoint();
+    await checkpoint.save();
   }
+  return checkpoint.lastProcessedLocationId;
 }
 
-// Fonction pour écrire le checkpoint
+// Fonction pour écrire le checkpoint dans la base de données
 async function writeCheckpoint(id) {
-  await fs.writeFile('checkpoint.txt', id.toString());
+  const checkpoint = await Checkpoint.findOne();
+  if (checkpoint) {
+    checkpoint.lastProcessedLocationId = id;
+    await checkpoint.save();
+  } else {
+    await new Checkpoint({ lastProcessedLocationId: id }).save();
+  }
 }
 
 // Fonction pour envoyer une alerte Discord
@@ -65,6 +78,28 @@ async function sendDiscordAlert(placeInfo) {
     await delay(2000); // Attendre 2 secondes entre chaque envoi
   } catch (error) {
     console.error('Erreur lors de l\'envoi de l\'alerte Discord:', error);
+  }
+}
+
+async function sendEndNotification(status, message) {
+  const discordMessage = {
+    content: `Le script de prospection a terminé son exécution.`,
+    embeds: [
+      {
+        title: `État : ${status}`,
+        description: message,
+        color: status === 'Succès' ? 3066993 : 15158332, // Couleur verte pour succès, rouge pour échec
+      },
+    ],
+  };
+  try {
+    await axios.post(DISCORD_WEBHOOK_URI, discordMessage);
+    console.log('Notification de fin d\'exécution envoyée avec succès');
+  } catch (error) {
+    console.error(
+      "Erreur lors de l'envoi de la notification de fin d'exécution:",
+      error
+    );
   }
 }
 
@@ -155,37 +190,43 @@ async function processPlace(place, location) {
 }
 
 async function main() {
-  await mongoose.connect(DB_URI);
+  try {
+    await mongoose.connect(DB_URI);
+    const locations = await readLocations();
+    let checkpointId = await readCheckpoint();
 
-  const locations = await readLocations();
-  let checkpointId = await readCheckpoint();
+    let processedCount = 0;
+    const maxProcessed = 10;
 
-  let processedCount = 0;
-  const maxProcessed = 10;
+    for (let i = 0; i < locations.length && processedCount < maxProcessed; i++) {
+      const location = locations[i];
 
-  for (let i = 0; i < locations.length && processedCount < maxProcessed; i++) {
-    const location = locations[i];
-    
-    if (location.id <= checkpointId) continue;
+      if (location.id <= checkpointId) continue;
 
-    const allPlaces = new Set();
+      const allPlaces = new Set();
 
-    for (const type of PLACE_TYPES) {
-      const places = await nearbySearch(location, type);
-      places.forEach(place => allPlaces.add(JSON.stringify(place)));
+      for (const type of PLACE_TYPES) {
+        const places = await nearbySearch(location, type);
+        places.forEach((place) => allPlaces.add(JSON.stringify(place)));
+      }
+
+      for (const placeString of allPlaces) {
+        const place = JSON.parse(placeString);
+        await processPlace(place, location);
+      }
+
+      checkpointId = location.id;
+      processedCount++;
     }
 
-    for (const placeString of allPlaces) {
-      const place = JSON.parse(placeString);
-      await processPlace(place, location);
-    }
-
-    checkpointId = location.id;
-    processedCount++;
+    await writeCheckpoint(checkpointId);
+    await sendEndNotification('Succès', `Le script a traité ${processedCount} emplacements.`);
+  } catch (error) {
+    console.error('Erreur lors de l\'exécution du script:', error);
+    await sendEndNotification('Échec', `Le script a rencontré une erreur : ${error.message}`);
+  } finally {
+    await mongoose.disconnect();
   }
-
-  await writeCheckpoint(checkpointId);
-  await mongoose.disconnect();
 }
 
 main().catch(console.error);
