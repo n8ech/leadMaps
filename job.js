@@ -1,14 +1,11 @@
 const axios = require('axios');
-const fs = require('fs').promises;
 const mongoose = require('mongoose');
 require('dotenv').config();
 
-// Récupération des variables d'environnement
 const PLACE_API_KEY = process.env.PLACE_API_KEY;
 const DISCORD_WEBHOOK_URI = process.env.DISCORD_WEBHOOK_URI;
 const DB_URI = process.env.DB_URI;
 
-// Schéma MongoDB pour les établissements
 const placeSchema = new mongoose.Schema({
   id: { type: String, unique: true },
   googleMapsUri: String,
@@ -26,19 +23,33 @@ const checkpointSchema = new mongoose.Schema({
 
 const Checkpoint = mongoose.model('Checkpoint', checkpointSchema);
 
-// Types d'établissements à rechercher
+// Schéma MongoDB pour les localisations
+const locationSchema = new mongoose.Schema({
+  id: { type: Number, unique: true }, 
+  latitude: Number,  
+  longitude: Number, 
+});
+
+const Location = mongoose.model('Location', locationSchema);
+
 const PLACE_TYPES = ['store', 'restaurant', 'lodging', 'bar'];
 
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Fonction pour lire les localisations depuis MongoDB
 async function readLocations() {
-  const data = await fs.readFile('locations.json', 'utf8');
-  return JSON.parse(data);
+  try {
+    // Récupérer toutes les localisations depuis la base MongoDB
+    const locations = await Location.find({});
+    return locations;
+  } catch (error) {
+    console.error('Erreur lors de la récupération des localisations:', error);
+    throw error;
+  }
 }
 
-// Fonction pour lire le checkpoint depuis la base de données
 async function readCheckpoint() {
   let checkpoint = await Checkpoint.findOne();
   if (!checkpoint) {
@@ -48,7 +59,6 @@ async function readCheckpoint() {
   return checkpoint.lastProcessedLocationId;
 }
 
-// Fonction pour écrire le checkpoint dans la base de données
 async function writeCheckpoint(id) {
   const checkpoint = await Checkpoint.findOne();
   if (checkpoint) {
@@ -59,7 +69,6 @@ async function writeCheckpoint(id) {
   }
 }
 
-// Fonction pour envoyer une alerte Discord
 async function sendDiscordAlert(placeInfo) {
   const message = {
     content: `Nouvel établissement sans site web détecté !`,
@@ -158,7 +167,6 @@ async function processPlace(place, location) {
   let existingPlace = await Place.findOne({ id: place.id });
 
   if (existingPlace) {
-    // Mise à jour des types si de nouveaux types sont trouvés
     const newTypes = place.types.filter(type => !existingPlace.types.includes(type));
     if (newTypes.length > 0) {
       existingPlace.types = [...new Set([...existingPlace.types, ...newTypes])];
